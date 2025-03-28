@@ -88,3 +88,60 @@ The system cycles through four information display modes:
 - Mobile app notifications
 - Integration with roasting process data
 - Machine learning for optimal drying profiles
+
+
+=== ESP32 Power Supply Schematic ===
+
+[12V DC Input]
+    |
+    |---> (C1) 0.33µF Ceramic Capacitor
+    |
+    |---> LM7805 (Regulator) ---> (C2) 0.1µF Ceramic Capacitor + (C3) 10µF Electrolytic
+    |       |
+    |       |---> +5V Output
+    |                |
+    |                |---> (C4) 470µF Electrolytic (optional for relay noise filtering)
+    |                |
+    |                |---> LM1117-3.3 (Regulator)
+    |                        |
+    |                        |---> (C5) 10µF Electrolytic Input
+    |                        |---> (C6) 10µF Electrolytic Output
+    |                        |
+    |                        |---> +3.3V Clean Output --> ESP32 3.3V pin
+    |
+    |---> Direct 5V line can also be used for peripherals (LCD, Relays, etc)
+
+GND of all components connected together.
+
+=== Notes ===
+- Keep capacitors as close as possible to regulator pins.
+- Use heatsinks for LM7805 if relays + WiFi + LCD pull more than 300mA continuously.
+- ESP32 must always be powered from the **3.3V** output only.
+
+Materials
+What to buy: 
+  Regualators:
+    5v Regulator - LM7805
+    3.3V Regulator - LM 1117
+  Ceramic Capacitors:
+    0.1uf 1pcs
+    0.33uf 1pcs
+  Electrolytic Capacitors:
+    10uf 3pcs
+    470uf 1pcs
+	
+
+
+
+[ESP32]                [DHT22]              [I2C LCD]          [Relay Module]        
++----------------+     +---------+          +---------+        +--------------+       
+| 3.3V ----------|-----| VCC     |          | VCC     |--------| VCC          |       
+| GND -----------|-----| GND     |          | GND     |--------| GND          |       
+| GPIO4 ---------|-----| DATA    |          |         |        |              |       
+|                |                      +--| SDA 21  |        | IN1 GPIO16   |---- Heating Mat    
+| GPIO21 (SDA) --|----------------------|--|         |        | IN2 GPIO17   |---- Fans            
+| GPIO22 (SCL) --|----------------------|--| SCL 22  |        | IN3 GPIO18   |---- Humidifier       
+| GPIO16 --------|-----------------------------------|        |              |                       
+| GPIO17 --------|-----------------------------------|        |              |                       
+| GPIO18 --------|-----------------------------------|        |              |                       
++----------------+                                    +-------+--------------+                       
