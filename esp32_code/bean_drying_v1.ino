@@ -3,7 +3,7 @@
 #include <DHT.h>
 #include <RTClib.h>
 #include <ESP32Servo.h>
-#include <Preferences.h>  // ESP32 non-volatile storage
+#include <Preferences.h>
 
 // ------------------- DHT22 --------------------
 #define DHTPIN 4
@@ -34,75 +34,70 @@ int servoPos = 0;
 #define BTN_TIMER 26   // Button to enter timer settings
 
 // ------------------- Preferences -------------
-Preferences prefs;  // For storing settings in flash memory
+Preferences prefs;
 
 // ------------------- Variables ----------------
 float temp, humi;
 float tempMin = 20, tempMax = 30;
 float humiMin = 40, humiMax = 60;
 int mode = 0;
-int editMode = 0;  // 0: View mode, 1: Edit tempMin, 2: Edit tempMax, 3: Edit humiMin, 4: Edit humiMax, 5-8: Timer settings
+int editMode = 0;
 unsigned long lastDebounceTime = 0;
-unsigned long debounceDelay = 200;  // Debounce time in milliseconds
-unsigned long lastSaveTime = 0;     // Track when we last saved to EEPROM
-const unsigned long SAVE_INTERVAL = 5000;  // Save settings after 5 seconds of inactivity
+unsigned long debounceDelay = 200;
+unsigned long lastSaveTime = 0;
+const unsigned long SAVE_INTERVAL = 5000;
 
 // Timer variables
-int startHour = 8, startMin = 0;    // Default 8:00 AM
-int stopHour = 18, stopMin = 0;     // Default 6:00 PM
+int startHour = 8, startMin = 0;
+int stopHour = 18, stopMin = 0;
 bool timerActive = false;
 bool servoEnabled = false;
-bool settingsChanged = false;       // Flag to track if settings have changed
+bool settingsChanged = false;
+
+// LCD Management
+unsigned long lastLCDUpdate = 0;
+const unsigned long LCD_UPDATE_INTERVAL = 500;
+bool blinkState = false;
+unsigned long lastBlinkTime = 0;
+const unsigned long BLINK_INTERVAL = 300;
+int lastMode = -1;
+int lastEditMode = -1;
 
 void setup() {
     Serial.begin(115200);
-    
-    // Open preferences with namespace "env-control"
     prefs.begin("env-control", false);
-    
-    // Load saved settings
     loadSettings();
     
-    // Initialize RTC
     if (!rtc.begin()) {
         Serial.println("Couldn't find RTC");
-        lcd.clear();
+        lcd.init();
+        lcd.backlight();
         lcd.print("RTC not found!");
-        lcd.setCursor(0, 1);
-        lcd.print("Check wiring");
         delay(2000);
     }
-    
-    // Set RTC time if needed (run once, then comment out)
-    // rtc.adjust(DateTime(F(__DATE__), F(__TIME__))); 
     
     dht.begin();
     lcd.init();
     lcd.backlight();
     
-    // Initialize servo
     myServo.attach(SERVO_PIN);
-    myServo.write(0);  // Initial position
+    myServo.write(0);
     
-    // Initialize relays
     pinMode(RELAY1, OUTPUT);
     pinMode(RELAY2, OUTPUT);
     pinMode(RELAY3, OUTPUT);
     pinMode(RELAY4, OUTPUT);
     
-    // Initialize buttons
     pinMode(BTN_MODE, INPUT_PULLUP);
     pinMode(BTN_UP, INPUT_PULLUP);
     pinMode(BTN_DOWN, INPUT_PULLUP);
     pinMode(BTN_TIMER, INPUT_PULLUP);
     
-    // Initialize with relays off
     digitalWrite(RELAY1, LOW);
     digitalWrite(RELAY2, LOW);
     digitalWrite(RELAY3, LOW);
     digitalWrite(RELAY4, LOW);
     
-    // Show welcome message
     lcd.clear();
     lcd.print("Environmental");
     lcd.setCursor(0, 1);
@@ -111,35 +106,26 @@ void setup() {
 }
 
 void loop() {
-    // Get current time from RTC
     DateTime now = rtc.now();
-    
-    // Read sensor data
     temp = dht.readTemperature();
     humi = dht.readHumidity();
     
     if (!isnan(temp) && !isnan(humi)) {
-        // Check timer for servo control
         checkTimer(now);
-        
-        // Control relays based on sensor readings
         controlRelays();
-        
-        // Handle button presses
         handleButtons();
         
-        // Update LCD display
-        updateLCD(now);
+        if (millis() - lastLCDUpdate > LCD_UPDATE_INTERVAL || editMode > 0) {
+            updateLCD(now);
+            lastLCDUpdate = millis();
+        }
         
-        // Save settings if they've changed and no button has been pressed for a while
-        if (settingsChanged && (millis() - lastDebounceTime > SAVE_INTERVAL) && 
-            (millis() - lastSaveTime > SAVE_INTERVAL)) {
+        if (settingsChanged && (millis() - lastDebounceTime > SAVE_INTERVAL)) {
             saveSettings();
             settingsChanged = false;
             lastSaveTime = millis();
         }
     } else {
-        // Show error if sensor readings fail
         lcd.clear();
         lcd.print("Sensor Error!");
         delay(1000);
@@ -149,197 +135,135 @@ void loop() {
 }
 
 void loadSettings() {
-    // Load temperature settings
     tempMin = prefs.getFloat("tempMin", 20.0);
     tempMax = prefs.getFloat("tempMax", 30.0);
-    
-    // Load humidity settings
     humiMin = prefs.getFloat("humiMin", 40.0);
     humiMax = prefs.getFloat("humiMax", 60.0);
-    
-    // Load timer settings
     startHour = prefs.getInt("startHour", 8);
     startMin = prefs.getInt("startMin", 0);
     stopHour = prefs.getInt("stopHour", 18);
     stopMin = prefs.getInt("stopMin", 0);
-    
-    Serial.println("Settings loaded from flash memory");
+    Serial.println("Settings loaded");
 }
 
 void saveSettings() {
-    // Show saving message
     lcd.clear();
     lcd.print("Saving settings");
-    lcd.setCursor(0, 1);
-    lcd.print("Please wait...");
+    delay(500);
     
-    // Save temperature settings
     prefs.putFloat("tempMin", tempMin);
     prefs.putFloat("tempMax", tempMax);
-    
-    // Save humidity settings
     prefs.putFloat("humiMin", humiMin);
     prefs.putFloat("humiMax", humiMax);
-    
-    // Save timer settings
     prefs.putInt("startHour", startHour);
     prefs.putInt("startMin", startMin);
     prefs.putInt("stopHour", stopHour);
     prefs.putInt("stopMin", stopMin);
     
-    Serial.println("Settings saved to flash memory");
-    
-    // Show confirmation
     lcd.clear();
     lcd.print("Settings saved!");
     delay(1000);
 }
 
 void checkTimer(DateTime now) {
-    // Check if current time is within the set time range
-    int currentHour = now.hour();
-    int currentMin = now.minute();
+    int currentTime = now.hour() * 60 + now.minute();
+    int startTime = startHour * 60 + startMin;
+    int stopTime = stopHour * 60 + stopMin;
     
-    // Calculate minutes since midnight for easier comparison
-    int currentTimeMinutes = currentHour * 60 + currentMin;
-    int startTimeMinutes = startHour * 60 + startMin;
-    int stopTimeMinutes = stopHour * 60 + stopMin;
-    
-    // Check if timer should be active
-    if (startTimeMinutes <= currentTimeMinutes && currentTimeMinutes < stopTimeMinutes) {
+    if (startTime <= currentTime && currentTime < stopTime) {
         if (!timerActive) {
-            // Timer just became active, move servo
             timerActive = true;
             servoEnabled = true;
             digitalWrite(RELAY4, HIGH);
-            myServo.write(90); // Move to 90 degrees when timer starts
+            myServo.write(90);
         }
     } else {
         if (timerActive) {
-            // Timer just became inactive, reset servo
             timerActive = false;
             servoEnabled = false;
             digitalWrite(RELAY4, LOW);
-            myServo.write(0); // Return to 0 degrees when timer stops
+            myServo.write(0);
         }
     }
 }
 
 void controlRelays() {
-    // Heater: Turn ON if temperature is below minimum
     digitalWrite(RELAY1, temp < tempMin ? HIGH : LOW);
-    
-    // Fans: Turn ON if temperature is above maximum
     digitalWrite(RELAY2, temp > tempMax ? HIGH : LOW);
-    
-    // Humidifier: Turn ON if humidity is below minimum
     digitalWrite(RELAY3, humi < humiMin ? HIGH : LOW);
-    
-    // RELAY4 is controlled by the timer function
 }
 
 void handleButtons() {
-    // MODE button: Switch between display modes (single click) or enter edit mode (long press)
-    if (digitalRead(BTN_MODE) == LOW) {
-        if (millis() - lastDebounceTime > debounceDelay) {
-            // Check if this is a long press (more than 1 second)
-            unsigned long pressStart = millis();
-            while (digitalRead(BTN_MODE) == LOW) {
-                if (millis() - pressStart > 1000) {
-                    // Long press detected - enter edit mode for current display
-                    if (editMode == 0) {
-                        switch (mode) {
-                            case 0: // Current readings - no edit mode
-                                break;
-                            case 1: // Temperature range
-                                editMode = 1; // Start with tempMin
-                                break;
-                            case 2: // Humidity range
-                                editMode = 3; // Start with humiMin
-                                break;
-                            case 3: // Relay status - no edit mode
-                                break;
-                            case 4: // Timer display
-                                editMode = 5; // Start with start hour
-                                break;
-                        }
-                    } else {
-                        // If already in edit mode, exit
-                        editMode = 0;
-                    }
-                    lastDebounceTime = millis();
-                    return;
-                }
-                delay(50);
-            }
-            
-            // If we get here, it was a short press
+    // MODE button handling
+    if (digitalRead(BTN_MODE) == LOW && millis() - lastDebounceTime > debounceDelay) {
+        unsigned long pressStart = millis();
+        while (digitalRead(BTN_MODE) == LOW && millis() - pressStart < 1000) {
+            delay(50);
+        }
+        
+        if (millis() - pressStart >= 1000) {
+            // Long press - enter edit mode
             if (editMode == 0) {
-                // Cycle through display modes
+                switch (mode) {
+                    case 1: editMode = 1; break;
+                    case 2: editMode = 3; break;
+                    case 4: editMode = 5; break;
+                }
+            } else {
+                editMode = 0;
+            }
+        } else {
+            // Short press - change mode or edit parameter
+            if (editMode == 0) {
                 mode = (mode + 1) % 5;
             } else {
-                // In edit mode, cycle through editable parameters
                 switch (editMode) {
-                    case 1: editMode = 2; break; // tempMin -> tempMax
-                    case 2: editMode = 0; break; // tempMax -> exit
-                    case 3: editMode = 4; break; // humiMin -> humiMax
-                    case 4: editMode = 0; break; // humiMax -> exit
-                    case 5: editMode = 6; break; // startHour -> startMin
-                    case 6: editMode = 7; break; // startMin -> stopHour
-                    case 7: editMode = 8; break; // stopHour -> stopMin
-                    case 8: editMode = 0; break; // stopMin -> exit
+                    case 1: editMode = 2; break;
+                    case 2: editMode = 0; break;
+                    case 3: editMode = 4; break;
+                    case 4: editMode = 0; break;
+                    case 5: editMode = 6; break;
+                    case 6: editMode = 7; break;
+                    case 7: editMode = 8; break;
+                    case 8: editMode = 0; break;
                 }
             }
-            lastDebounceTime = millis();
         }
+        lastDebounceTime = millis();
     }
-    
-    // TIMER button: Show timer display (single click) or toggle servo (long press)
-    if (digitalRead(BTN_TIMER) == LOW) {
-        if (millis() - lastDebounceTime > debounceDelay) {
-            // Check if this is a long press (more than 1 second)
-            unsigned long pressStart = millis();
-            while (digitalRead(BTN_TIMER) == LOW) {
-                if (millis() - pressStart > 1000) {
-                    // Long press detected - manually toggle servo
-                    servoEnabled = !servoEnabled;
-                    digitalWrite(RELAY4, servoEnabled ? HIGH : LOW);
-                    myServo.write(servoEnabled ? 90 : 0);
-                    
-                    // Show confirmation
-                    lcd.clear();
-                    lcd.print("Servo manually");
-                    lcd.setCursor(0, 1);
-                    lcd.print(servoEnabled ? "ENABLED" : "DISABLED");
-                    delay(1000);
-                    
-                    lastDebounceTime = millis();
-                    return;
-                }
-                delay(50);
-            }
-            
-            // If we get here, it was a short press
-            if (editMode == 0) {
-                // Switch to timer display mode
-                mode = 4;
-            }
-            lastDebounceTime = millis();
+
+    // TIMER button handling
+    if (digitalRead(BTN_TIMER) == LOW && millis() - lastDebounceTime > debounceDelay) {
+        unsigned long pressStart = millis();
+        while (digitalRead(BTN_TIMER) == LOW && millis() - pressStart < 1000) {
+            delay(50);
         }
+        
+        if (millis() - pressStart >= 1000) {
+            // Long press - toggle servo
+            servoEnabled = !servoEnabled;
+            digitalWrite(RELAY4, servoEnabled ? HIGH : LOW);
+            myServo.write(servoEnabled ? 90 : 0);
+            lcd.clear();
+            lcd.print("Servo manually");
+            lcd.setCursor(0, 1);
+            lcd.print(servoEnabled ? "ENABLED" : "DISABLED");
+            delay(1000);
+        } else {
+            // Short press - show timer
+            if (editMode == 0) mode = 4;
+        }
+        lastDebounceTime = millis();
     }
-    
-    // UP button: Increase values in edit mode
-    if (digitalRead(BTN_UP) == LOW && editMode != 0) {
-        if (millis() - lastDebounceTime > debounceDelay) {
+
+    // UP/DOWN buttons
+    if (editMode > 0) {
+        if (digitalRead(BTN_UP) == LOW && millis() - lastDebounceTime > debounceDelay) {
             adjustValues(true);
             settingsChanged = true;
             lastDebounceTime = millis();
         }
-    }
-    
-    // DOWN button: Decrease values in edit mode
-    if (digitalRead(BTN_DOWN) == LOW && editMode != 0) {
-        if (millis() - lastDebounceTime > debounceDelay) {
+        if (digitalRead(BTN_DOWN) == LOW && millis() - lastDebounceTime > debounceDelay) {
             adjustValues(false);
             settingsChanged = true;
             lastDebounceTime = millis();
@@ -351,117 +275,155 @@ void adjustValues(bool increase) {
     const float tempIncrement = 0.5;
     
     switch (editMode) {
-        case 1:  // Edit tempMin
-            tempMin = increase ? tempMin + tempIncrement : tempMin - tempIncrement;
-            if (tempMin >= tempMax) tempMin = tempMax - 1;
-            break;
-        case 2:  // Edit tempMax
-            tempMax = increase ? tempMax + tempIncrement : tempMax - tempIncrement;
-            if (tempMax <= tempMin) tempMax = tempMin + 1;
-            break;
-        case 3:  // Edit humiMin
-            humiMin = increase ? humiMin + tempIncrement : humiMin - tempIncrement;
-            if (humiMin >= humiMax) humiMin = humiMax - 1;
-            if (humiMin < 0) humiMin = 0;
-            break;
-        case 4:  // Edit humiMax
-            humiMax = increase ? humiMax + tempIncrement : humiMax - tempIncrement;
-            if (humiMax <= humiMin) humiMax = humiMin + 1;
-            if (humiMax > 100) humiMax = 100;
-            break;
-        case 5:  // Edit Start Hour
-            startHour = increase ? (startHour + 1) % 24 : (startHour + 23) % 24;
-            break;
-        case 6:  // Edit Start Minute
-            startMin = increase ? (startMin + 1) % 60 : (startMin + 59) % 60;
-            break;
-        case 7:  // Edit Stop Hour
-            stopHour = increase ? (stopHour + 1) % 24 : (stopHour + 23) % 24;
-            break;
-        case 8:  // Edit Stop Minute
-            stopMin = increase ? (stopMin + 1) % 60 : (stopMin + 59) % 60;
-            break;
+        case 1: tempMin = constrain(increase ? tempMin + tempIncrement : tempMin - tempIncrement, -10, tempMax-1); break;
+        case 2: tempMax = constrain(increase ? tempMax + tempIncrement : tempMax - tempIncrement, tempMin+1, 50); break;
+        case 3: humiMin = constrain(increase ? humiMin + 1 : humiMin - 1, 0, humiMax-1); break;
+        case 4: humiMax = constrain(increase ? humiMax + 1 : humiMax - 1, humiMin+1, 100); break;
+        case 5: startHour = (startHour + (increase ? 1 : 23)) % 24; break;
+        case 6: startMin = (startMin + (increase ? 1 : 59)) % 60; break;
+        case 7: stopHour = (stopHour + (increase ? 1 : 23)) % 24; break;
+        case 8: stopMin = (stopMin + (increase ? 1 : 59)) % 60; break;
     }
 }
 
 String padZero(int num) {
-    // Add leading zero for single-digit numbers
-    if (num < 10) {
-        return "0" + String(num);
-    }
-    return String(num);
+    return num < 10 ? "0" + String(num) : String(num);
 }
 
 void updateLCD(DateTime now) {
-    lcd.clear();
+    if (mode != lastMode || editMode != lastEditMode) {
+        lcd.clear();
+        lastMode = mode;
+        lastEditMode = editMode;
+    }
     
     if (editMode > 0) {
-        // In edit mode, display and highlight the value being edited
-        lcd.print("Edit Mode:");
-        lcd.setCursor(0, 1);
-        
-        switch (editMode) {
-            case 1:
-                lcd.print("Temp Min: " + String(tempMin));
-                break;
-            case 2:
-                lcd.print("Temp Max: " + String(tempMax));
-                break;
-            case 3:
-                lcd.print("Humi Min: " + String(humiMin));
-                break;
-            case 4:
-                lcd.print("Humi Max: " + String(humiMax));
-                break;
-            case 5:
-                lcd.print("Start Hour: " + padZero(startHour));
-                break;
-            case 6:
-                lcd.print("Start Min: " + padZero(startMin));
-                break;
-            case 7:
-                lcd.print("Stop Hour: " + padZero(stopHour));
-                break;
-            case 8:
-                lcd.print("Stop Min: " + padZero(stopMin));
-                break;
+        if (millis() - lastBlinkTime > BLINK_INTERVAL) {
+            blinkState = !blinkState;
+            lastBlinkTime = millis();
         }
         
+        lcd.setCursor(0, 0);
+        lcd.print("Edit: ");
+        
+        lcd.setCursor(0, 1);
+        switch (editMode) {
+            case 1: 
+                lcd.print("Temp Min:");
+                if (!blinkState) {
+                    lcd.setCursor(10, 1);
+                    lcd.print(tempMin);
+                }
+                break;
+            case 2:
+                lcd.print("Temp Max:");
+                if (!blinkState) {
+                    lcd.setCursor(10, 1);
+                    lcd.print(tempMax);
+                }
+                break;
+            case 3:
+                lcd.print("Humi Min:");
+                if (!blinkState) {
+                    lcd.setCursor(10, 1);
+                    lcd.print(humiMin);
+                }
+                break;
+            case 4:
+                lcd.print("Humi Max:");
+                if (!blinkState) {
+                    lcd.setCursor(10, 1);
+                    lcd.print(humiMax);
+                }
+                break;
+            case 5:
+                lcd.print("Start Hour:");
+                if (!blinkState) {
+                    lcd.setCursor(12, 1);
+                    lcd.print(padZero(startHour));
+                }
+                break;
+            case 6:
+                lcd.print("Start Min:");
+                if (!blinkState) {
+                    lcd.setCursor(12, 1);
+                    lcd.print(padZero(startMin));
+                }
+                break;
+            case 7:
+                lcd.print("Stop Hour:");
+                if (!blinkState) {
+                    lcd.setCursor(12, 1);
+                    lcd.print(padZero(stopHour));
+                }
+                break;
+            case 8:
+                lcd.print("Stop Min:");
+                if (!blinkState) {
+                    lcd.setCursor(12, 1);
+                    lcd.print(padZero(stopMin));
+                }
+                break;
+        }
     } else {
-        // Normal display modes
-        if (mode == 0) {
-            // Current readings
-            lcd.print("Temp: " + String(temp) + " C");
-            lcd.setCursor(0, 1);
-            lcd.print("Humi: " + String(humi) + " %");
-        } else if (mode == 1) {
-            // Temperature range
-            lcd.print("T-Range: ");
-            lcd.setCursor(0, 1);
-            lcd.print(String(tempMin) + "-" + String(tempMax) + " C");
-        } else if (mode == 2) {
-            // Humidity range
-            lcd.print("H-Range: ");
-            lcd.setCursor(0, 1);
-            lcd.print(String(humiMin) + "-" + String(humiMax) + " %");
-        } else if (mode == 3) {
-            // Relay status
-            lcd.print("H:");
-            lcd.print(digitalRead(RELAY1) ? "ON " : "OFF");
-            lcd.print(" F:");
-            lcd.print(digitalRead(RELAY2) ? "ON" : "OFF");
-            lcd.setCursor(0, 1);
-            lcd.print("Hm:");
-            lcd.print(digitalRead(RELAY3) ? "ON " : "OFF");
-            lcd.print(" S:");
-            lcd.print(digitalRead(RELAY4) ? "ON" : "OFF");
-        } else if (mode == 4) {
-            // Timer & Clock
-            lcd.print(padZero(now.hour()) + ":" + padZero(now.minute()) + " " + 
-                      (servoEnabled ? "S:ON" : "S:OFF"));
-            lcd.setCursor(0, 1);
-            lcd.print("T:" + padZero(startHour) + ":" + padZero(startMin) + 
-                      "-" + padZero(stopHour) + ":" + padZero(stopMin));
+        switch (mode) {
+            case 0:
+                lcd.setCursor(0, 0);
+                lcd.print("Temp: ");
+                lcd.print(temp);
+                lcd.print(" C");
+                lcd.setCursor(0, 1);
+                lcd.print("Humi: ");
+                lcd.print(humi);
+                lcd.print(" %");
+                break;
+            case 1:
+                lcd.setCursor(0, 0);
+                lcd.print("T-Range: ");
+                lcd.setCursor(0, 1);
+                lcd.print(tempMin);
+                lcd.print("-");
+                lcd.print(tempMax);
+                lcd.print(" C");
+                break;
+            case 2:
+                lcd.setCursor(0, 0);
+                lcd.print("H-Range: ");
+                lcd.setCursor(0, 1);
+                lcd.print(humiMin);
+                lcd.print("-");
+                lcd.print(humiMax);
+                lcd.print(" %");
+                break;
+            case 3:
+                lcd.setCursor(0, 0);
+                lcd.print("H:");
+                lcd.print(digitalRead(RELAY1) ? "ON " : "OFF");
+                lcd.print(" F:");
+                lcd.print(digitalRead(RELAY2) ? "ON" : "OFF");
+                lcd.setCursor(0, 1);
+                lcd.print("Hm:");
+                lcd.print(digitalRead(RELAY3) ? "ON " : "OFF");
+                lcd.print(" S:");
+                lcd.print(digitalRead(RELAY4) ? "ON" : "OFF");
+                break;
+            case 4:
+                lcd.setCursor(0, 0);
+                lcd.print(padZero(now.hour()));
+                lcd.print(":");
+                lcd.print(padZero(now.minute()));
+                lcd.print(" ");
+                lcd.print(servoEnabled ? "S:ON" : "S:OFF");
+                lcd.setCursor(0, 1);
+                lcd.print("T:");
+                lcd.print(padZero(startHour));
+                lcd.print(":");
+                lcd.print(padZero(startMin));
+                lcd.print("-");
+                lcd.print(padZero(stopHour));
+                lcd.print(":");
+                lcd.print(padZero(stopMin));
+                break;
         }
     }
 }
